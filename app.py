@@ -35,7 +35,14 @@ DEFAULT_MODEL = "gemini-flash-latest"  # override with GEMINI_MODEL in secrets
 SINGLE_CALL_LIMIT = 25_000  # transcripts shorter than this go straight to the final call
 CHUNK_SIZE = 12_000  # characters per chunk for long transcripts
 MAX_CHUNKS = 20  # safety limit so a huge video doesn't burn your API quota
-PREFERRED_LANGUAGES = ["en", "en-US", "en-GB"]
+PREFERRED_LANGUAGES = ["en", "en-US", "en-GB", "hi"]
+
+# What the user sees in the sidebar -> the instruction sent to the AI
+OUTPUT_LANGUAGES = {
+    "English": "English",
+    "Hindi (हिंदी)": "Hindi written in Devanagari script (keep common technical terms in English)",
+    "Hinglish": "Hinglish: Hindi written in the English/Roman alphabet, mixed with English technical terms",
+}
 
 
 class AppError(Exception):
@@ -197,12 +204,15 @@ def condense_chunk(chunk: str, position: int, total: int) -> str:
         f"This is part {position} of {total} of a lecture transcript. "
         "Rewrite it as compact, faithful study notes: keep every key concept, "
         "definition, formula, example and conclusion; remove filler and repetition. "
+        "Write the notes in the same language as the transcript. "
         "Plain text bullet points only.\n\nTRANSCRIPT PART:\n" + chunk
     )
     return call_gemini(prompt)
 
 
-def build_final_prompt(material: str, n_slides: int, n_questions: int, difficulty: str) -> str:
+def build_final_prompt(
+    material: str, n_slides: int, n_questions: int, difficulty: str, language: str
+) -> str:
     """The main prompt: asks for ONE JSON object containing the whole study pack."""
     return (
         "You are an expert teaching assistant. Using ONLY the lecture material below, "
@@ -222,7 +232,10 @@ def build_final_prompt(material: str, n_slides: int, n_questions: int, difficult
         f"- Exactly {n_questions} multiple-choice questions, each with 4 options, "
         f"difficulty level: {difficulty}. Spread correct answers across positions.\n"
         "- 4-8 note sections with clear headings; 5-12 key terms.\n"
-        "- Do not invent facts that are not in the material.\n\n"
+        "- Do not invent facts that are not in the material.\n"
+        "- The lecture may be in Hindi or another language. Write ALL text values "
+        f"(title, summary, notes, key terms, slides, quiz) in: {language}. "
+        "Keep the JSON keys in English.\n\n"
         "LECTURE MATERIAL:\n" + material
     )
 
@@ -303,9 +316,11 @@ def normalize_pack(raw: dict) -> dict:
 
 
 @st.cache_data(show_spinner=False)
-def generate_pack(material: str, n_slides: int, n_questions: int, difficulty: str) -> dict:
+def generate_pack(
+    material: str, n_slides: int, n_questions: int, difficulty: str, language: str
+) -> dict:
     """The single JSON call that produces the whole study pack (cached)."""
-    prompt = build_final_prompt(material, n_slides, n_questions, difficulty)
+    prompt = build_final_prompt(material, n_slides, n_questions, difficulty, language)
     try:
         return normalize_pack(parse_json(call_gemini(prompt, json_mode=True)))
     except AppError as first_error:
@@ -315,7 +330,9 @@ def generate_pack(material: str, n_slides: int, n_questions: int, difficulty: st
         raise
 
 
-def build_study_pack(get_text, n_slides: int, n_questions: int, difficulty: str) -> dict:
+def build_study_pack(
+    get_text, n_slides: int, n_questions: int, difficulty: str, language: str
+) -> dict:
     """
     Run the whole pipeline with live progress messages in the UI.
     `get_text` is a function that returns the transcript text (from YouTube or pasted).
@@ -343,7 +360,7 @@ def build_study_pack(get_text, n_slides: int, n_questions: int, difficulty: str)
             material = "\n\n".join(condensed)
 
         st.write("🧠 Generating summary, notes, slides and quiz...")
-        pack = generate_pack(material, n_slides, n_questions, difficulty)
+        pack = generate_pack(material, n_slides, n_questions, difficulty, language)
         status.update(label="Study pack ready!", state="complete", expanded=False)
     return pack
 
@@ -473,10 +490,14 @@ def render_results(pack: dict) -> None:
         render_quiz(pack["quiz"])
 
 
-def run_pipeline(get_text, n_slides: int, n_questions: int, difficulty: str) -> None:
+def run_pipeline(
+    get_text, n_slides: int, n_questions: int, difficulty: str, language: str
+) -> None:
     """Run the pipeline, save the result in session_state, and show friendly errors."""
     try:
-        st.session_state["pack"] = build_study_pack(get_text, n_slides, n_questions, difficulty)
+        st.session_state["pack"] = build_study_pack(
+            get_text, n_slides, n_questions, difficulty, language
+        )
         st.session_state["quiz_round"] = 0
     except AppError as error:
         st.error(str(error))
@@ -499,6 +520,8 @@ def main() -> None:
         n_slides = st.slider("Number of slides", 6, 15, 10)
         n_questions = st.slider("Quiz questions", 3, 10, 5)
         difficulty = st.selectbox("Quiz difficulty", ["easy", "medium", "hard"], index=1)
+        language_label = st.selectbox("Output language", list(OUTPUT_LANGUAGES), index=0)
+        language = OUTPUT_LANGUAGES[language_label]
         st.markdown("---")
         st.caption("Works best with lectures that have captions (manual or auto-generated).")
 
@@ -513,7 +536,9 @@ def main() -> None:
             if not video_id:
                 st.error("That doesn't look like a valid YouTube link. Please check it and try again.")
             else:
-                run_pipeline(lambda: get_transcript(video_id), n_slides, n_questions, difficulty)
+                run_pipeline(
+                    lambda: get_transcript(video_id), n_slides, n_questions, difficulty, language
+                )
 
     with tab_paste:
         st.markdown(
@@ -528,7 +553,9 @@ def main() -> None:
             if not raw.strip():
                 st.error("Please paste a transcript or upload a file first.")
             else:
-                run_pipeline(lambda: clean_transcript_text(raw), n_slides, n_questions, difficulty)
+                run_pipeline(
+                    lambda: clean_transcript_text(raw), n_slides, n_questions, difficulty, language
+                )
 
     pack = st.session_state.get("pack")
     if pack:
