@@ -90,10 +90,57 @@ def get_video_id(url: str) -> str | None:
     return match.group(1) if match else None
 
 
+def make_transcript_api() -> YouTubeTranscriptApi:
+    """
+    Build the transcript client. YouTube blocks most cloud-server IPs, so if you
+    add proxy credentials to your secrets the request goes through a proxy.
+    """
+    webshare_user = get_secret("WEBSHARE_USERNAME")
+    webshare_pass = get_secret("WEBSHARE_PASSWORD")
+    proxy_url = get_secret("PROXY_URL")
+
+    if webshare_user and webshare_pass:
+        from youtube_transcript_api.proxies import WebshareProxyConfig
+
+        return YouTubeTranscriptApi(
+            proxy_config=WebshareProxyConfig(
+                proxy_username=webshare_user, proxy_password=webshare_pass
+            )
+        )
+    if proxy_url:
+        from youtube_transcript_api.proxies import GenericProxyConfig
+
+        return YouTubeTranscriptApi(
+            proxy_config=GenericProxyConfig(http_url=proxy_url, https_url=proxy_url)
+        )
+    return YouTubeTranscriptApi()
+
+
+def clean_transcript_text(raw: str) -> str:
+    """
+    Clean a transcript the user pasted or uploaded. Handles plain text copied from
+    YouTube's "Show transcript" panel as well as .srt and .vtt subtitle files.
+    """
+    text = raw.replace("WEBVTT", " ")
+    text = re.sub(r"^\s*\d+\s*$", " ", text, flags=re.MULTILINE)  # SRT line counters
+    text = re.sub(  # timestamps such as 0:05, 01:02:03,500 or 00:01 --> 00:04
+        r"\d{1,2}:\d{2}(?::\d{2})?(?:[.,]\d{1,3})?"
+        r"(?:\s*-->\s*\d{1,2}:\d{2}(?::\d{2})?(?:[.,]\d{1,3})?)?",
+        " ",
+        text,
+    )
+    text = re.sub(r"<[^>]+>", " ", text)  # tags inside .vtt files
+    text = re.sub(r"\[[^\]]*\]", " ", text)  # [Music], [Applause]
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) < 200:
+        raise AppError("That transcript is too short (under 200 characters) to build a study pack.")
+    return text
+
+
 @st.cache_data(show_spinner=False)
 def get_transcript(video_id: str) -> str:
     """Download the transcript text. Cached so the same video isn't fetched twice."""
-    api = YouTubeTranscriptApi()
+    api = make_transcript_api()
     try:
         try:
             fetched = api.fetch(video_id, languages=PREFERRED_LANGUAGES)
@@ -113,8 +160,8 @@ def get_transcript(video_id: str) -> str:
         message = str(error).lower()
         if "block" in message or "ip" in message:
             raise AppError(
-                "YouTube blocked the transcript request (common on cloud servers). "
-                "Try again later, or run the app locally. See the README troubleshooting."
+                "YouTube blocked the transcript request (this is common on cloud servers). "
+                "Use the 'Paste / upload transcript' tab instead, or run the app locally."
             )
         raise AppError(f"Could not fetch the transcript: {error}")
 
@@ -268,11 +315,14 @@ def generate_pack(material: str, n_slides: int, n_questions: int, difficulty: st
         raise
 
 
-def build_study_pack(video_id: str, n_slides: int, n_questions: int, difficulty: str) -> dict:
-    """Run the whole pipeline with live progress messages in the UI."""
+def build_study_pack(get_text, n_slides: int, n_questions: int, difficulty: str) -> dict:
+    """
+    Run the whole pipeline with live progress messages in the UI.
+    `get_text` is a function that returns the transcript text (from YouTube or pasted).
+    """
     with st.status("Building your study pack...", expanded=True) as status:
-        st.write("📥 Fetching transcript...")
-        transcript = get_transcript(video_id)
+        st.write("📥 Getting transcript...")
+        transcript = get_text()
         st.write(f"✅ Transcript ready ({len(transcript):,} characters)")
 
         if len(transcript) <= SINGLE_CALL_LIMIT:
@@ -423,10 +473,26 @@ def render_results(pack: dict) -> None:
         render_quiz(pack["quiz"])
 
 
+def run_pipeline(get_text, n_slides: int, n_questions: int, difficulty: str) -> None:
+    """Run the pipeline, save the result in session_state, and show friendly errors."""
+    try:
+        st.session_state["pack"] = build_study_pack(get_text, n_slides, n_questions, difficulty)
+        st.session_state["quiz_round"] = 0
+    except AppError as error:
+        st.error(str(error))
+        if "blocked" in str(error).lower():
+            st.info(
+                "💡 Tip: open YouTube → click **…more** under the video → **Show transcript** → "
+                "copy the text, then paste it in the **Paste / upload transcript** tab."
+            )
+    except Exception as error:  # last-resort safety net
+        st.error(f"Something unexpected went wrong: {error}")
+
+
 def main() -> None:
     st.set_page_config(page_title="Lecture → Study Pack", page_icon="🎓", layout="wide")
     st.title("🎓 YouTube Lecture → Study Pack")
-    st.caption("Paste a lecture link and get a summary, notes, slides and a quiz.")
+    st.caption("Paste a lecture link (or its transcript) and get a summary, notes, slides and a quiz.")
 
     with st.sidebar:
         st.header("⚙️ Settings")
@@ -436,22 +502,33 @@ def main() -> None:
         st.markdown("---")
         st.caption("Works best with lectures that have captions (manual or auto-generated).")
 
-    url = st.text_input("YouTube lecture link", placeholder="https://www.youtube.com/watch?v=...")
+    tab_link, tab_paste = st.tabs(["🔗 YouTube link", "📋 Paste / upload transcript"])
 
-    if st.button("✨ Generate study pack", type="primary"):
-        video_id = get_video_id(url) if url else None
-        if not video_id:
-            st.error("That doesn't look like a valid YouTube link. Please check it and try again.")
-        else:
-            try:
-                st.session_state["pack"] = build_study_pack(
-                    video_id, n_slides, n_questions, difficulty
-                )
-                st.session_state["quiz_round"] = 0
-            except AppError as error:
-                st.error(str(error))
-            except Exception as error:  # last-resort safety net
-                st.error(f"Something unexpected went wrong: {error}")
+    with tab_link:
+        url = st.text_input(
+            "YouTube lecture link", placeholder="https://www.youtube.com/watch?v=..."
+        )
+        if st.button("✨ Generate study pack", type="primary", key="generate_link"):
+            video_id = get_video_id(url) if url else None
+            if not video_id:
+                st.error("That doesn't look like a valid YouTube link. Please check it and try again.")
+            else:
+                run_pipeline(lambda: get_transcript(video_id), n_slides, n_questions, difficulty)
+
+    with tab_paste:
+        st.markdown(
+            "**Use this if the link method is blocked.** On YouTube, click **…more** under the "
+            "video → **Show transcript**, copy everything, and paste it below. "
+            "You can also upload a `.txt`, `.srt` or `.vtt` file."
+        )
+        pasted = st.text_area("Transcript text", height=220)
+        uploaded = st.file_uploader("...or upload a transcript file", type=["txt", "srt", "vtt"])
+        if st.button("✨ Generate study pack", type="primary", key="generate_paste"):
+            raw = uploaded.getvalue().decode("utf-8", errors="ignore") if uploaded else pasted
+            if not raw.strip():
+                st.error("Please paste a transcript or upload a file first.")
+            else:
+                run_pipeline(lambda: clean_transcript_text(raw), n_slides, n_questions, difficulty)
 
     pack = st.session_state.get("pack")
     if pack:
