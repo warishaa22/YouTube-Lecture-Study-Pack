@@ -17,6 +17,11 @@ A Streamlit app that turns a YouTube lecture into a complete study pack:
 4. One Gemini call returns the whole study pack as JSON
 5. The output is validated and shown in tabs; slides are built with `python-pptx`
 
+## Languages
+
+Lectures in Hindi (or other languages) work. Choose the **Output language** in the sidebar:
+English, Hindi (Devanagari) or Hinglish (Hindi in English letters).
+
 ## Tech stack
 
 Python · Streamlit · Google Gemini (Flash) · youtube-transcript-api · python-pptx
