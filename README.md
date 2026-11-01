@@ -72,12 +72,27 @@ Before pushing, check that `git status` does **not** list `.streamlit/secrets.to
 
 | Problem | Fix |
 |---|---|
-| "YouTube blocked the transcript request" | YouTube often blocks cloud server IPs. Retry later, test a different video, or run locally. A proxy service can fix this for production. |
+| "YouTube blocked the transcript request" | YouTube blocks most cloud-server IPs. Use the **Paste / upload transcript** tab (YouTube → …more → Show transcript → copy), run the app locally, or add proxy credentials (see below). |
 | "Transcripts are disabled" / "No captions" | The video has no captions. Pick a lecture that shows a CC option. |
 | "No API key found" | Add `GEMINI_API_KEY` to `.streamlit/secrets.toml` (local) or the Secrets panel (cloud). |
 | Model not found error | Set `GEMINI_MODEL` in secrets to a Flash model your key supports. |
 | Rate-limit / quota errors | The free tier has limits. Wait a minute, or try a shorter lecture or fewer quiz questions. |
 | Quiz resets when I change a setting | Settings only apply when you press **Generate** again. |
+
+## Optional: proxy for the link method on Streamlit Cloud
+
+Add one of these to your secrets so transcript requests go through a proxy:
+
+```toml
+# Option A: Webshare (use a "Residential" proxy plan)
+WEBSHARE_USERNAME = "your-username"
+WEBSHARE_PASSWORD = "your-password"
+
+# Option B: any other HTTP proxy
+PROXY_URL = "http://user:pass@host:port"
+```
+
+Proxies usually cost money, so the paste/upload tab is the free alternative.
 
 ## Ideas for next steps
 
